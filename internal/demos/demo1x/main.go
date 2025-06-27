@@ -17,7 +17,8 @@ import (
 )
 
 func main() {
-	const topic = "emqx-demo1x-topic"
+	const mqttTopic = "emqx-go-demo1x-topic"
+	const clientIDX = "emqx-go-demo1x-client-"
 
 	{
 		config := &mqttgo.Config{
@@ -26,18 +27,20 @@ func main() {
 			Password:     "password",
 			OrderMatters: false,
 		}
-		onConnect := func(c mqttgo.Client, retryTimes uint64) (mqttgo.RetryType, error) {
-			token := c.Subscribe(topic, 1, func(client mqttgo.Client, message mqttgo.Message) {
-				zaplog.SUG.Debugln("subscribe-msg:", neatjsons.SxB(message.Payload()))
-			})
-			tokenState, err := mqttgo.WaitToken(token)
-			if err != nil {
-				return mqttgo.RetryTypeRetries, erero.Wro(err)
-			}
-			must.Same(tokenState, mqttgo.TokenStateSuccess)
-			return mqttgo.RetryTypeSuccess, nil
-		}
-		client1 := rese.V1(mqttgo.NewClient(config, utils.NewUUID(), onConnect))
+		clientID := clientIDX + utils.NewUUID()
+		client1 := rese.V1(mqttgo.NewClientWithCallback(config, clientID, mqttgo.NewCallback().
+			OnConnect(func(c mqttgo.Client, retryTimes uint64) (mqttgo.CallbackState, error) {
+				token := c.Subscribe(mqttTopic, 1, func(client mqttgo.Client, message mqttgo.Message) {
+					zaplog.SUG.Debugln("subscribe-msg:", neatjsons.SxB(message.Payload()))
+				})
+				tokenState, err := mqttgo.WaitToken(token)
+				if err != nil {
+					return mqttgo.CallbackRetries, erero.Wro(err)
+				}
+				must.Same(tokenState, mqttgo.TokenStateSuccess)
+				return mqttgo.CallbackSuccess, nil
+			}),
+		))
 		defer client1.Disconnect(500)
 	}
 
@@ -50,25 +53,24 @@ func main() {
 			ApiPassword: must.Nice(os.Getenv("EMQX_API_PASSWORD")),
 		})
 
-		type Message struct {
+		type messageType struct {
 			Uuid string `json:"uuid"`
 		}
-		payload := neatjsonm.S(&Message{Uuid: utils.NewUUID()})
+		payload := neatjsonm.S(&messageType{Uuid: utils.NewUUID()})
 
-		var msgBatch []*emqxgo.BulkMessage
 		for i := 0; i < 3; i++ {
-			msgBatch = append(msgBatch, &emqxgo.BulkMessage{
-				PayloadEncoding: "plain",
-				Topic:           topic,
-				Qos:             1,
+			onceMessage := &emqxgo.PublishMessage{
 				Payload:         payload,
-				Properties:      map[string]string{},
+				PayloadEncoding: "plain",
+				Properties:      map[string]any{},
+				Qos:             1,
 				Retain:          false,
-			})
+				Topic:           mqttTopic,
+			}
+			zaplog.SUG.Debugln("message:", neatjsons.S(onceMessage))
+			onceResult := rese.P1(emqxHttpClient.Publish(context.Background(), onceMessage))
+			zaplog.SUG.Debugln("results:", neatjsons.S(onceResult))
 		}
-		zaplog.SUG.Debugln("message:", neatjsons.S(msgBatch))
-		results := rese.A1(emqxHttpClient.PublishBulk(context.Background(), msgBatch))
-		zaplog.SUG.Debugln("results:", neatjsons.S(results))
 	}
 
 	time.Sleep(time.Millisecond * 500)
